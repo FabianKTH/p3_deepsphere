@@ -4,7 +4,7 @@
 import numpy as np
 import torch
 from pygsp.graphs.nngraphs.spherehealpix import SphereHealpix
-from pygsp.graphs.nngraphs.sphereicosahedron import SphereIcosahedron
+from pygsp.graphs.nngraphs.sphereicosahedral import SphereIcosahedral as SphereIcosahedron
 from pygsp.graphs.sphereequiangular import SphereEquiangular
 from scipy import sparse
 from scipy.sparse import coo_matrix
