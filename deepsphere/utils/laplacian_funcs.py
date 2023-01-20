@@ -79,7 +79,7 @@ def get_icosahedron_laplacians(nodes, depth, laplacian_type):
     for _ in range(depth):
         nodes = icosahedron_nodes_calculator(order)
         order_initial = icosahedron_order_calculator(nodes)
-        G = SphereIcosahedron(level=int(order_initial))
+        G = SphereIcosahedron(subdivisions=2**int(order_initial))
         G.compute_laplacian(laplacian_type)
         laplacian = prepare_laplacian(G.L)
         laps.append(laplacian)
