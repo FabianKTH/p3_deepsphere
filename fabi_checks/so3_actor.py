@@ -9,7 +9,7 @@ from torch.distributions.normal import Normal
 
 from deepsphere.layers.chebyshev import SphericalChebConv
 from deepsphere.layers.samplings.icosahedron_pool_unpool import Icosahedron
-from deepsphere.models.spherical_unet.utils import SphericalChebBNPool
+from deepsphere.models.spherical_unet.utils import SphericalChebBNPool, SphericalChebBN
 # deepsphere imports
 from deepsphere.utils.laplacian_funcs import get_icosahedron_laplacians
 # user imports
@@ -24,12 +24,7 @@ LOG_STD_MIN = -20  # (-20)
 
 class SO3Actor(nn.Module):
 
-    def __init__(
-            self,
-            state_dim: int,
-            action_dim: int,
-            hidden_dims: str,
-    ):
+    def __init__(self):
 
         super(SO3Actor, self).__init__()
 
@@ -56,7 +51,7 @@ class SO3Actor(nn.Module):
         # sphere_dir = '/fabi_project/sphere/ico4.vtk' # TODO: dont code so hard (ico_low2.vtk)
 
         # v, f = read_mesh(sphere_dir)
-        v = pg.graphs.SphereIcosahedral(2 ** 4).coords
+        v = pg.graphs.SphereIcosahedral(subdivisions=2 ** 4).coords
         f = Sphere(xyz=v).faces
 
         v = v.astype(float)
@@ -85,8 +80,8 @@ class SO3Actor(nn.Module):
         self.laps = get_icosahedron_laplacians(nodes=2562, depth=4, laplacian_type="combinatorial")
         self.pooling_class = Icosahedron()
 
-        self.conv1 = SphericalChebBNPool(1, 8, self.laps[2], self.pooling_class.pooling, kernel_size=3)
-        self.conv2 = FinalSphericalChebBN(8, 2, self.laps[2], kernel_size=3)
+        self.conv1 = SphericalChebBN(1, 8, self.laps[3].to(device=device),  kernel_size=3)
+        self.conv2 = FinalSphericalChebBN(8, 2, self.laps[3].to(device=device), kernel_size=3)
 
     # @staticmethod
     def _reformat_state(self, state):
@@ -137,6 +132,16 @@ class SO3Actor(nn.Module):
         sh_[..., 3] = dirs[..., 0]
 
         return sh_
+
+    def _sphsignal_to_dirs(self, signal):
+        N, no_channels, l_max = signal.shape
+        dirs = torch.zeros(size=[N, no_channels, 3])
+
+        dirs[..., 0] = signal[..., 3]
+        dirs[..., 1] = signal[..., 1]
+        dirs[..., 2] = signal[..., 2]
+
+        return dirs
 
     @staticmethod
     def nocoeff_from_l(l_max):
@@ -225,7 +230,7 @@ class SO3Actor(nn.Module):
     ) -> (torch.Tensor, torch.Tensor):
 
         # extract state data
-        state = self._reformat_state(state)
+        # state = self._reformat_state(state)  # TODO put in again
 
         # convert state to spharm basis
         # state = self._change_basis(state, 'descoteaux->spharm')
@@ -235,7 +240,9 @@ class SO3Actor(nn.Module):
         # state = self._change_basis(state, 'tournier->spharm') # should be descoteaux->spharm
 
         p = self._so3_deepsphere_net(state)
-        p = self._get_direction(p, is_sp_signal=True)
+        # p = self._get_direction(p, is_sp_signal=True)
+        p = self._sp_to_sph(p)
+        p = self._sphsignal_to_dirs(p)
 
         mu = p[:, 0]
         log_std = p[:, 1]
