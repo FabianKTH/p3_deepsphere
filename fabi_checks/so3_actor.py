@@ -64,24 +64,38 @@ class SO3Actor(nn.Module):
         self.sphere = Sphere(xyz=v)
         self._init_dipy_basis()
 
-    def _init_dipy_basis(self):
-        B_desc, invB_desc = sh_to_sf_matrix(self.sphere, sh_order=self.l_max,
-                                            basis_type='descoteaux07', full_basis=True,
-                                            legacy=False, return_inv=True, smooth=0)
+        self.B_desc, self.invB_desc = self._init_dipy_basis(basis='descoteaux07')
+        self.B_tour, self.invB_tour = self._init_dipy_basis(basis='tournier07')
 
-        B_tour, invB_tour = sh_to_sf_matrix(self.sphere, sh_order=self.l_max,
-                                            basis_type='tournier07', full_basis=True,
-                                            legacy=False, return_inv=True, smooth=0)
+        # small (but natural) icosahedron
+        v_small = pg.graphs.SphereIcosahedral(subdivisions=1).coords  # no subdivisions
+        self.B_tour_small, self.invB_tour_small = self._init_dipy_basis(basis='tournier07',
+                                                                        sphere=Sphere(xyz=v_small))
 
-        self.B_desc, self.invB_desc = self._tt(B_desc), self._tt(invB_desc)
-        self.B_tour, self.invB_tour = self._tt(B_tour), self._tt(invB_tour)
+    def _init_dipy_basis(self, basis="tournier07", sphere=None):
+
+        if sphere is None:
+            sphere = self.sphere
+
+        B_, invB_ = sh_to_sf_matrix(sphere, sh_order=self.l_max,
+                                    basis_type=basis, full_basis=True,
+                                    legacy=False, return_inv=True, smooth=0)
+
+        return self._tt(B_), self._tt(invB_)
 
     def _init_deepsphere(self):
-        self.laps = get_icosahedron_laplacians(nodes=2562, depth=4, laplacian_type="combinatorial")
+        self.laps = get_icosahedron_laplacians(nodes=2562, depth=5, laplacian_type="combinatorial")
         self.pooling_class = Icosahedron()
 
-        self.conv1 = SphericalChebBN(1, 8, self.laps[3].to(device=device),  kernel_size=3)
-        self.conv2 = FinalSphericalChebBN(8, 2, self.laps[3].to(device=device), kernel_size=3)
+        self.conv0 = SphericalChebBN(1, 4, self.laps[4].to(device=device), kernel_size=3)
+        self.conv1 = SphericalChebBNPool(4, 8, self.laps[3].to(device=device),
+                                         pooling=self.pooling_class.pooling, kernel_size=3)
+        self.conv2 = SphericalChebBNPool(8, 16, self.laps[2].to(device=device),
+                                         pooling=self.pooling_class.pooling, kernel_size=3)
+        self.conv3 = SphericalChebBNPool(16, 32, self.laps[1].to(device=device),
+                                         pooling=self.pooling_class.pooling, kernel_size=3)
+        self.conv4 = FinalSphericalChebBNPool(32, 2, self.laps[0].to(device=device),
+                                              pooling=self.pooling_class.pooling, kernel_size=3)
 
     # @staticmethod
     def _reformat_state(self, state):
@@ -135,7 +149,7 @@ class SO3Actor(nn.Module):
 
     def _sphsignal_to_dirs(self, signal):
         N, no_channels, l_max = signal.shape
-        dirs = torch.zeros(size=[N, no_channels, 3])
+        dirs = torch.zeros(size=[N, no_channels, 3], device=device)
 
         dirs[..., 0] = signal[..., 3]
         dirs[..., 1] = signal[..., 1]
@@ -217,8 +231,11 @@ class SO3Actor(nn.Module):
         x = signal[:, 0, None]
         x = torch.swapaxes(x, 1, 2)
 
+        x = self.conv0(x)  # self.laps[3])
         x = self.conv1(x)  # self.laps[3])
         x = self.conv2(x)  # self.laps[3])
+        x = self.conv3(x)  # self.laps[3])
+        x = self.conv4(x)  # self.laps[3])
 
         return x
 
@@ -241,7 +258,11 @@ class SO3Actor(nn.Module):
 
         p = self._so3_deepsphere_net(state)
         # p = self._get_direction(p, is_sp_signal=True)
-        p = self._sp_to_sph(p)
+        # p = self._sp_to_sph(p)
+
+        # space to spharm transform by matmul with inverse B
+        p = torch.matmul(p, self.invB_tour_small)
+
         p = self._sphsignal_to_dirs(p)
 
         mu = p[:, 0]
@@ -286,29 +307,17 @@ class SO3Actor(nn.Module):
         return logp_pi
 
 
-class FinalSphericalChebBN(nn.Module):
-    """Building Block with a Chebyshev Convolution, Batchnormalization, and ReLu activation.
-    """
-
-    def __init__(self, in_channels, out_channels, lap, kernel_size):
-        """Initialization.
-        Args:
-            in_channels (int): initial number of channels.
-            out_channels (int): output number of channels.
-            lap (:obj:`torch.sparse.FloatTensor`): laplacian.
-            kernel_size (int, optional): polynomial degree. Defaults to 3.
-        """
-        super().__init__()
-        self.spherical_cheb = SphericalChebConv(in_channels, out_channels, lap, kernel_size)
-        self.batchnorm = nn.BatchNorm1d(out_channels)
+class FinalSphericalChebBN(SphericalChebBN):
 
     def forward(self, x):
-        """Forward Pass.
-        Args:
-            x (:obj:`torch.tensor`): input [batch x vertices x channels/features]
-        Returns:
-            :obj:`torch.tensor`: output [batch x vertices x channels/features]
-        """
         x = self.spherical_cheb(x)
         x = self.batchnorm(x.permute(0, 2, 1))
         return x
+
+
+class FinalSphericalChebBNPool(SphericalChebBNPool):
+
+    def __init__(self, in_channels, out_channels, lap, pooling, kernel_size):
+        super().__init__(in_channels, out_channels, lap, pooling, kernel_size)
+        self.pooling = pooling
+        self.spherical_cheb_bn = FinalSphericalChebBN(in_channels, out_channels, lap, kernel_size)

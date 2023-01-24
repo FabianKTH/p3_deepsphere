@@ -19,6 +19,8 @@ class SyntheticData:
             rnd_sph = self.actor._dirs_to_shsignal(rnd_vec[None, None, :])
             rnd_sph = rnd_sph[0]
             rnd_sp = self.actor._sph_to_sp(rnd_sph)
+            rnd_vec = torch.nn.functional.normalize(rnd_vec, dim=-1)
+
             return rnd_sp, rnd_vec
         else:
             raise StopIteration
@@ -37,14 +39,15 @@ class IterDset(data.IterableDataset):
 
 def main():
     _actor      = SO3Actor()
-    synth_data  = SyntheticData(_actor, 4096)
+    _actor.to(device=torch.device("cuda"))
+    synth_data  = SyntheticData(_actor, 4096 * 8)
     dset        = IterDset(synth_data)
     criterion   = torch.nn.MSELoss()
-    optimizer   = optim.SGD(_actor.parameters(), lr=0.00001, momentum=0.9)
+    optimizer   = optim.SGD(_actor.parameters(), lr=0.01, momentum=0.9)
 
     loss_hist = list()
 
-    for xi, yi in data.DataLoader(dset, batch_size=4):
+    for xi, yi in data.DataLoader(dset, batch_size=512):
 
         optimizer.zero_grad()
         out, _ = _actor(xi, stochastic=False)
